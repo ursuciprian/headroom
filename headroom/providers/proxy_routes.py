@@ -276,22 +276,38 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         normalize_request_path(request, "/v1/messages")
         return await proxy.handle_anthropic_messages(request, _api_target(proxy, "anthropic"))
 
-    # AWS Bedrock InvokeModel passthrough. Registered ONLY when an upstream is
-    # configured (`--bedrock-api-url` / BEDROCK_TARGET_API_URL): without it,
-    # `/model/{id}/invoke` keeps falling through to the catch-all (verbatim,
-    # signature-intact) so existing behavior is unchanged. The `{model_id:path}`
+    # AWS Bedrock passthrough: InvokeModel for Claude Code under
+    # CLAUDE_CODE_USE_BEDROCK=1, Converse for the AI SDK provider OpenCode uses,
+    # plus the control-plane listing Claude Code reads at startup. Registered
+    # ONLY when an upstream is configured (`--bedrock-api-url` /
+    # BEDROCK_TARGET_API_URL): without it these paths keep falling through to the
+    # catch-all, so existing behavior is unchanged. The `{model_id:path}`
     # converter captures inference-profile ids that contain dots, colons and
     # slashes (e.g. `us.anthropic.claude-sonnet-4-5-20250929-v1:0`). See
-    # headroom/proxy/handlers/bedrock.py for the SigV4 caveat.
+    # headroom/proxy/handlers/bedrock.py for how SigV4 is handled.
     if getattr(proxy.config, "bedrock_api_url", None):
 
         @app.post("/model/{model_id:path}/invoke")
         async def bedrock_invoke(request: Request, model_id: str):
-            return await proxy.handle_bedrock_invoke(request, model_id, stream=False)
+            return await proxy.handle_bedrock_invoke(request, model_id, action="invoke")
 
         @app.post("/model/{model_id:path}/invoke-with-response-stream")
         async def bedrock_invoke_stream(request: Request, model_id: str):
-            return await proxy.handle_bedrock_invoke(request, model_id, stream=True)
+            return await proxy.handle_bedrock_invoke(
+                request, model_id, action="invoke-with-response-stream"
+            )
+
+        @app.post("/model/{model_id:path}/converse")
+        async def bedrock_converse(request: Request, model_id: str):
+            return await proxy.handle_bedrock_invoke(request, model_id, action="converse")
+
+        @app.post("/model/{model_id:path}/converse-stream")
+        async def bedrock_converse_stream(request: Request, model_id: str):
+            return await proxy.handle_bedrock_invoke(request, model_id, action="converse-stream")
+
+        @app.get("/inference-profiles")
+        async def bedrock_inference_profiles(request: Request):
+            return await proxy.handle_bedrock_control(request, "inference-profiles")
 
     _register_openai_responses_routes(app, proxy)
 

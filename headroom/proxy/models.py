@@ -161,13 +161,15 @@ class ProxyConfig:
     backend: str = "anthropic"
     bedrock_region: str = "us-west-2"
     bedrock_profile: str | None = None
-    # Custom upstream for the Bedrock InvokeModel passthrough routes
-    # (`/model/{id}/invoke[-with-response-stream]`). When set, those routes are
-    # registered and compress the request body before forwarding here. Point it
-    # at a re-signing gateway (LiteLLM, LocalStack, a corporate Bedrock
-    # proxy) — NOT raw AWS, since rewriting the body invalidates the caller's
-    # SigV4 signature. Leave unset (default) to keep `--backend bedrock`'s
-    # direct-to-AWS, re-signing behavior unchanged.
+    # Upstream for the Bedrock passthrough routes (`/model/{id}/invoke`,
+    # `/model/{id}/converse`, their streaming variants, `/inference-profiles`).
+    # When set, those routes are registered and compress the request body before
+    # forwarding here. An AWS endpoint gets a credential of its own: a Bedrock
+    # API key if one is available (the caller's, else `AWS_BEARER_TOKEN_BEDROCK`),
+    # otherwise a fresh SigV4 signature (region from the hostname, credentials
+    # from `bedrock_profile`). Any other upstream is treated as a gateway that
+    # owns signing and keeps the caller's headers.
+    # Leave unset (default) to keep `--backend bedrock` behavior unchanged.
     bedrock_api_url: str | None = None
     anyllm_provider: str = "openai"
 
