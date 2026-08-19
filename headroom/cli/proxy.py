@@ -954,9 +954,12 @@ def dashboard(port: int, no_open: bool) -> None:
     "--bedrock-api-url",
     default=None,
     help=(
-        "Custom Bedrock InvokeModel upstream for the /model/{id}/invoke "
-        "passthrough routes. Point at a re-signing gateway (LiteLLM, "
-        "LocalStack), NOT raw AWS — rewriting the body breaks SigV4. "
+        "Bedrock upstream for the /model/{id}/invoke and /model/{id}/converse "
+        "passthrough routes. An AWS endpoint (bedrock-runtime.<region>."
+        "amazonaws.com) is authorized with a Bedrock API key when one is set "
+        "(AWS_BEARER_TOKEN_BEDROCK), else re-signed with SigV4 using "
+        "--bedrock-profile; anything else (LiteLLM, LocalStack, a corporate "
+        "gateway) is forwarded with the caller's own auth headers. "
         "(env: BEDROCK_TARGET_API_URL)"
     ),
 )

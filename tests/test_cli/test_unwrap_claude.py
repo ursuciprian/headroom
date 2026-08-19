@@ -242,18 +242,28 @@ def test_unwrap_claude_restores_all_base_url_modes(runner: CliRunner) -> None:
             "previous": None,
             "foundry_mode": False,
             "vertex_mode": False,
+            "bedrock_mode": False,
             "settings_path": settings_path,
         },
         {
             "previous": None,
             "foundry_mode": True,
             "vertex_mode": False,
+            "bedrock_mode": False,
             "settings_path": settings_path,
         },
         {
             "previous": None,
             "foundry_mode": False,
             "vertex_mode": True,
+            "bedrock_mode": False,
+            "settings_path": settings_path,
+        },
+        {
+            "previous": None,
+            "foundry_mode": False,
+            "vertex_mode": False,
+            "bedrock_mode": True,
             "settings_path": settings_path,
         },
     ]

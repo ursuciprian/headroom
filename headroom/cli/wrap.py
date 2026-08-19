@@ -639,6 +639,7 @@ def _start_proxy(
     anthropic_api_url: str | None = None,
     vertex_api_url: str | None = None,
     clear_vertex_api_url: bool = False,
+    bedrock_api_url: str | None = None,
     copilot_api_token: str | None = None,
     copilot_refresh_oauth_token: str | None = None,
     copilot_api_token_expires_at: float | None = None,
@@ -694,6 +695,9 @@ def _start_proxy(
     if vertex_api_url:
         cmd.extend(["--vertex-api-url", vertex_api_url])
 
+    if bedrock_api_url:
+        cmd.extend(["--bedrock-api-url", bedrock_api_url])
+
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
     stdio_log_path = _get_proxy_stdio_log_path()
@@ -731,6 +735,8 @@ def _start_proxy(
         proxy_env.pop("VERTEX_TARGET_API_URL", None)
     if vertex_api_url:
         proxy_env["VERTEX_TARGET_API_URL"] = vertex_api_url
+    if bedrock_api_url:
+        proxy_env["BEDROCK_TARGET_API_URL"] = bedrock_api_url
     # Pin the wrapper-validated Copilot token for this proxy instance only.
     # Injected into the subprocess env here (not the parent's os.environ) so it
     # never leaks into shared state. The proxy's CopilotTokenProvider honours
@@ -1175,11 +1181,57 @@ def _vertex_target_api_url_from_claude_env(proxy_url: str) -> str | None:
     return vertex_url
 
 
-def _claude_wrap_base_url_env_key(*, foundry_mode: bool = False, vertex_mode: bool = False) -> str:
+def _bedrock_target_url_from_claude_env(proxy_url: str) -> str | None:
+    """Real Bedrock upstream Claude Code would hit, or ``None`` if none is set.
+
+    Mirrors :func:`_vertex_target_api_url_from_claude_env`. An
+    ``ANTHROPIC_BEDROCK_BASE_URL`` or ``BEDROCK_TARGET_API_URL`` that already
+    points at this proxy — the case after a previous ``wrap claude`` run left it
+    in the shell — is not a real upstream, so it returns ``None`` and the caller
+    falls back to deriving one from the region instead.
+    """
+    explicit_target = os.environ.get("BEDROCK_TARGET_API_URL", "").strip()
+    if explicit_target:
+        return (
+            None
+            if _normalize_proxy_api_url(explicit_target) == _normalize_proxy_api_url(proxy_url)
+            else explicit_target
+        )
+    bedrock_url = os.environ.get("ANTHROPIC_BEDROCK_BASE_URL", "").strip()
+    if not bedrock_url:
+        return None
+    if _normalize_proxy_api_url(bedrock_url) == _normalize_proxy_api_url(proxy_url):
+        return None
+    return bedrock_url
+
+
+def _default_bedrock_upstream_url(region: str | None) -> str:
+    """Real AWS Bedrock runtime endpoint for ``region``.
+
+    Used when ``CLAUDE_CODE_USE_BEDROCK=1`` is set but no explicit
+    ``ANTHROPIC_BEDROCK_BASE_URL``/``BEDROCK_TARGET_API_URL`` names a real
+    upstream — Bedrock's URL bakes the region into the hostname, unlike Vertex
+    (region in the path), so the proxy needs a concrete host to forward to.
+    """
+    resolved = (
+        region
+        or os.environ.get("HEADROOM_REGION")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-west-2"
+    )
+    return f"https://bedrock-runtime.{resolved}.amazonaws.com"
+
+
+def _claude_wrap_base_url_env_key(
+    *, foundry_mode: bool = False, vertex_mode: bool = False, bedrock_mode: bool = False
+) -> str:
     if vertex_mode:
         return "ANTHROPIC_VERTEX_BASE_URL"
     if foundry_mode:
         return "ANTHROPIC_FOUNDRY_BASE_URL"
+    if bedrock_mode:
+        return "ANTHROPIC_BEDROCK_BASE_URL"
     return "ANTHROPIC_BASE_URL"
 
 
@@ -1361,6 +1413,7 @@ def _selfheal_dead_wrap_base_url() -> None:
             _claude_wrap_base_url_env_key(),
             _claude_wrap_base_url_env_key(foundry_mode=True),
             _claude_wrap_base_url_env_key(vertex_mode=True),
+            _claude_wrap_base_url_env_key(bedrock_mode=True),
         ):
             _check_and_clear_dead_wrap_marker(settings_path, key=key)
     except Exception:  # noqa: BLE001 - hook must never break session startup
@@ -1484,6 +1537,7 @@ def _write_claude_wrap_base_url(
     *,
     foundry_mode: bool = False,
     vertex_mode: bool = False,
+    bedrock_mode: bool = False,
     settings_path: Path | None = None,
     port: int | None = None,
 ) -> str | None:
@@ -1505,7 +1559,9 @@ def _write_claude_wrap_base_url(
     path = settings_path or (Path.cwd() / ".claude" / "settings.local.json")
     payload = _read_settings_for_write(path)
     env_map = dict(payload.get("env") or {}) if isinstance(payload.get("env"), dict) else {}
-    key = _claude_wrap_base_url_env_key(foundry_mode=foundry_mode, vertex_mode=vertex_mode)
+    key = _claude_wrap_base_url_env_key(
+        foundry_mode=foundry_mode, vertex_mode=vertex_mode, bedrock_mode=bedrock_mode
+    )
     previous = env_map.get(key)
     env_map[key] = proxy_url
     payload["env"] = env_map
@@ -1551,6 +1607,7 @@ def _restore_claude_wrap_base_url(
     *,
     foundry_mode: bool = False,
     vertex_mode: bool = False,
+    bedrock_mode: bool = False,
     settings_path: Path | None = None,
     _key_override: str | None = None,
 ) -> None:
@@ -1564,7 +1621,7 @@ def _restore_claude_wrap_base_url(
     """
     path = settings_path or (Path.cwd() / ".claude" / "settings.local.json")
     key = _key_override or _claude_wrap_base_url_env_key(
-        foundry_mode=foundry_mode, vertex_mode=vertex_mode
+        foundry_mode=foundry_mode, vertex_mode=vertex_mode, bedrock_mode=bedrock_mode
     )
     if not path.exists():
         _clear_wrap_marker(path, key=key)
@@ -3658,6 +3715,7 @@ def _ensure_proxy_unlocked(
     anthropic_api_url: str | None = None,
     vertex_api_url: str | None = None,
     clear_vertex_api_url: bool = False,
+    bedrock_api_url: str | None = None,
     copilot_api_token: str | None = None,
     copilot_refresh_oauth_token: str | None = None,
     copilot_api_token_expires_at: float | None = None,
@@ -3912,6 +3970,13 @@ def _ensure_proxy_unlocked(
                     requested_vertex_url = _normalize_proxy_api_url(vertex_api_url)
                     if running_vertex_url != requested_vertex_url:
                         missing.append("vertex-api-url")
+                if bedrock_api_url:
+                    running_bedrock_url = _normalize_proxy_api_url(
+                        running_config.get("bedrock_api_url")
+                    )
+                    requested_bedrock_url = _normalize_proxy_api_url(bedrock_api_url)
+                    if running_bedrock_url != requested_bedrock_url:
+                        missing.append("bedrock-api-url")
 
                 if missing:
                     flags_str = ", ".join(
@@ -4001,6 +4066,7 @@ def _ensure_proxy_unlocked(
                     anthropic_api_url=anthropic_api_url,
                     vertex_api_url=vertex_api_url,
                     clear_vertex_api_url=clear_vertex_api_url,
+                    bedrock_api_url=bedrock_api_url,
                     copilot_api_token=copilot_api_token,
                     copilot_refresh_oauth_token=copilot_refresh_oauth_token,
                     copilot_api_token_expires_at=copilot_api_token_expires_at,
@@ -4776,6 +4842,7 @@ def claude(
     _settings_foundry: list[bool] = [False]
     port_holder: list[int] = [port]
     _settings_vertex: list[bool] = [False]
+    _settings_bedrock: list[bool] = [False]
     # Bind before the try so the finally can always reference it. It is otherwise
     # only assigned inside the try (after _ensure_proxy, which can raise), so an
     # early proxy-start failure would make the finally raise UnboundLocalError,
@@ -4867,6 +4934,23 @@ def claude(
         proxy_url = _claude_proxy_base_url(port)
         vertex_upstream = _vertex_target_api_url_from_claude_env(proxy_url) if use_vertex else None
 
+        # Detect Bedrock mode: with CLAUDE_CODE_USE_BEDROCK=1, Claude Code speaks
+        # the native /model/{id}/invoke and /model/{id}/converse Bedrock dialect
+        # and signs it itself (SigV4 or a Bedrock API key). ANTHROPIC_BEDROCK_BASE_URL
+        # is the documented way to redirect that traffic through a gateway; unlike
+        # Vertex, Bedrock has no per-request region routing, so the proxy needs a
+        # concrete upstream host (derived from --region/AWS_REGION when nothing
+        # explicit is set).
+        use_bedrock = bool(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
+        bedrock_upstream = (
+            (
+                _bedrock_target_url_from_claude_env(proxy_url)
+                or _default_bedrock_upstream_url(region)
+            )
+            if use_bedrock
+            else None
+        )
+
         _register_proxy_client(port)
         proxy_holder[0], actual_port = _ensure_proxy(
             port,
@@ -4880,6 +4964,7 @@ def claude(
             anthropic_api_url=foundry_upstream,
             vertex_api_url=vertex_upstream,
             clear_vertex_api_url=use_vertex and vertex_upstream is None,
+            bedrock_api_url=bedrock_upstream,
         )
         if actual_port != port:
             _unregister_proxy_client(port)
@@ -4917,6 +5002,10 @@ def claude(
         elif foundry_upstream:
             click.echo(
                 f"  Foundry mode: ANTHROPIC_FOUNDRY_BASE_URL={_foundry_proxy_url(proxy_url)} → upstream {foundry_upstream}"
+            )
+        elif use_bedrock:
+            click.echo(
+                f"  Bedrock mode: ANTHROPIC_BEDROCK_BASE_URL={proxy_url} → upstream {bedrock_upstream}"
             )
         else:
             click.echo(f"  ANTHROPIC_BASE_URL={proxy_url}")
@@ -4969,6 +5058,11 @@ def claude(
             # appends /v1/messages to.  The real Foundry URL includes /anthropic,
             # so the proxy URL must mirror that structure.
             env["ANTHROPIC_FOUNDRY_BASE_URL"] = _foundry_proxy_url(proxy_url)
+        elif use_bedrock:
+            # Claude Code stays in Bedrock mode (keeps CLAUDE_CODE_USE_BEDROCK and
+            # whatever AWS credentials it would otherwise sign with); we only
+            # redirect its Bedrock endpoint to Headroom.
+            env["ANTHROPIC_BEDROCK_BASE_URL"] = proxy_url
         else:
             env["ANTHROPIC_BASE_URL"] = proxy_url
 
@@ -4977,12 +5071,15 @@ def claude(
         # daemon's environment) also route through Headroom.
         _settings_vertex[0] = bool(use_vertex)
         _settings_foundry[0] = bool(foundry_upstream) and not _settings_vertex[0]
+        _settings_bedrock[0] = use_bedrock and not _settings_vertex[0] and not _settings_foundry[0]
         # _wrap_settings_path is bound before the try (above) so the finally is
         # always safe; the value is unchanged here.
         _check_and_clear_stale_wrap_marker(
             _wrap_settings_path,
             key=_claude_wrap_base_url_env_key(
-                foundry_mode=_settings_foundry[0], vertex_mode=_settings_vertex[0]
+                foundry_mode=_settings_foundry[0],
+                vertex_mode=_settings_vertex[0],
+                bedrock_mode=_settings_bedrock[0],
             ),
         )
         _saved_base_url[0] = _write_claude_wrap_base_url(
@@ -4995,6 +5092,7 @@ def claude(
             ),
             foundry_mode=_settings_foundry[0],
             vertex_mode=_settings_vertex[0],
+            bedrock_mode=_settings_bedrock[0],
             settings_path=_wrap_settings_path,
             port=port,
         )
@@ -5069,6 +5167,7 @@ def claude(
             _saved_base_url[0],
             foundry_mode=_settings_foundry[0],
             vertex_mode=_settings_vertex[0],
+            bedrock_mode=_settings_bedrock[0],
             settings_path=_wrap_settings_path,
         )
         cleanup()
@@ -5090,7 +5189,12 @@ def _warn_if_proxy_env_leaked(port: int) -> None:
     """
     proxy_host = f"127.0.0.1:{port}"
     leaked = []
-    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL"):
+    for name in (
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_VERTEX_BASE_URL",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+    ):
         value = os.environ.get(name, "").strip()
         if proxy_host in value:
             leaked.append((name, value))
@@ -5167,8 +5271,15 @@ def unwrap_claude(
     _unwrap_settings_path = Path.cwd() / ".claude" / "settings.local.json"
     if _remove_claude_wrap_selfheal_hook(_unwrap_settings_path):
         click.echo("  Removed Headroom wrap self-heal SessionStart hook (issue #2221).")
-    for _foundry, _vertex in ((False, False), (True, False), (False, True)):
-        _key = _claude_wrap_base_url_env_key(foundry_mode=_foundry, vertex_mode=_vertex)
+    for _foundry, _vertex, _bedrock in (
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ):
+        _key = _claude_wrap_base_url_env_key(
+            foundry_mode=_foundry, vertex_mode=_vertex, bedrock_mode=_bedrock
+        )
         _marker = _read_wrap_marker(_unwrap_settings_path)
         _prior = (
             _marker.get("previous") if _marker is not None and _marker.get("key") == _key else None
@@ -5177,6 +5288,7 @@ def unwrap_claude(
             _prior,
             foundry_mode=_foundry,
             vertex_mode=_vertex,
+            bedrock_mode=_bedrock,
             settings_path=_unwrap_settings_path,
         )
 
