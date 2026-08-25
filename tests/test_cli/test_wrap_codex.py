@@ -1202,6 +1202,34 @@ def test_codex_session_launch_settings_keep_routing_process_local(
     assert config_file.read_text(encoding="utf-8") == original_config
 
 
+def test_codex_session_launch_settings_migrate_legacy_headroom_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    codex_home = tmp_path / "custom-codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(wrap_mod, "_project_name_from_cwd", lambda: None)
+    config_file = codex_home / "config.toml"
+    original_config = (
+        'model_provider = "headroom"\n'
+        "[model_providers.headroom]\n"
+        'base_url = "http://127.0.0.1:8787/v1"\n'
+    )
+    config_file.write_text(original_config, encoding="utf-8")
+
+    args, env, _ = wrap_mod._codex_session_launch_settings(
+        port=9898,
+        codex_args=("exec", "hello"),
+        environ={"CODEX_HOME": str(codex_home)},
+    )
+
+    assert 'model_provider="openai"' in args
+    assert 'openai_base_url="http://127.0.0.1:9898/v1"' in args
+    assert wrap_mod._UPSTREAM_BASE_URL_ENV_VAR not in env
+    assert config_file.read_text(encoding="utf-8") == original_config
+
+
 def test_codex_session_launch_settings_preserve_custom_provider_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1233,6 +1261,46 @@ def test_codex_session_launch_settings_preserve_custom_provider_identity(
     ) in args
     assert env[wrap_mod._UPSTREAM_BASE_URL_ENV_VAR] == "https://api.example.test/v1"
     assert config_file.read_text(encoding="utf-8") == original_config
+
+
+@pytest.mark.parametrize(
+    ("provider", "upstream"),
+    (
+        ("amazon-bedrock", "https://bedrock-mantle.eu-west-1.api.aws/openai/v1"),
+        (
+            "amazon-bedrock-runtime",
+            "https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1",
+        ),
+    ),
+)
+def test_codex_session_launch_settings_support_bedrock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: str,
+    upstream: str,
+) -> None:
+    _set_test_home(monkeypatch, tmp_path)
+    codex_home = tmp_path / "custom-codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(wrap_mod, "_project_name_from_cwd", lambda: None)
+    (codex_home / "config.toml").write_text(
+        f'model_provider = "{provider}"\n'
+        f"[model_providers.{provider}.aws]\n"
+        'region = "eu-west-1"\n'
+        'profile = "corp"\n',
+        encoding="utf-8",
+    )
+
+    args, env, _ = wrap_mod._codex_session_launch_settings(
+        port=9898,
+        codex_args=("exec", "hello"),
+        environ={"CODEX_HOME": str(codex_home)},
+    )
+
+    assert f"model_providers.{provider}.supports_websockets=false" in args
+    assert env[wrap_mod._UPSTREAM_BASE_URL_ENV_VAR] == upstream
+    assert env["AWS_PROFILE"] == "corp"
 
 
 def test_codex_dotted_key_emits_bare_segments_when_safe() -> None:

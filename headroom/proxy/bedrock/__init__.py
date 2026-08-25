@@ -11,6 +11,7 @@ from headroom.proxy.bedrock.endpoints import (
     AWS_HOST_LABELS,
     BEDROCK_ACTIONS,
     aws_bedrock_region,
+    aws_bedrock_signing_target,
     control_plane_base,
 )
 from headroom.proxy.bedrock.signing import (
@@ -30,6 +31,7 @@ __all__ = [
     "INBOUND_SIGNATURE_HEADERS",
     "SIGNING_SERVICE",
     "aws_bedrock_region",
+    "aws_bedrock_signing_target",
     "aws_session",
     "bearer_token",
     "control_plane_base",

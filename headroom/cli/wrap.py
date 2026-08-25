@@ -640,6 +640,7 @@ def _start_proxy(
     vertex_api_url: str | None = None,
     clear_vertex_api_url: bool = False,
     bedrock_api_url: str | None = None,
+    bedrock_profile: str | None = None,
     copilot_api_token: str | None = None,
     copilot_refresh_oauth_token: str | None = None,
     copilot_api_token_expires_at: float | None = None,
@@ -697,6 +698,8 @@ def _start_proxy(
 
     if bedrock_api_url:
         cmd.extend(["--bedrock-api-url", bedrock_api_url])
+    if bedrock_profile:
+        cmd.extend(["--bedrock-profile", bedrock_profile])
 
     timeout_seconds = _resolve_wrap_proxy_timeout_seconds()
     log_path = _get_log_path()
@@ -2292,6 +2295,45 @@ def _codex_toml_value(value: Any) -> str:
 
 
 _CODEX_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_CODEX_BEDROCK_PROVIDERS = {
+    "amazon-bedrock": "https://bedrock-mantle.{region}.api.aws/openai/v1",
+    "amazon-bedrock-runtime": "https://bedrock-runtime.{region}.amazonaws.com/openai/v1",
+}
+
+
+def _codex_bedrock_provider_settings(
+    config: dict[str, Any],
+    provider: str,
+    environ: dict[str, str],
+    region_override: str | None = None,
+) -> tuple[str, str | None] | None:
+    """Resolve the built-in Codex Bedrock provider's upstream and AWS profile."""
+    template = _CODEX_BEDROCK_PROVIDERS.get(provider)
+    if template is None:
+        return None
+
+    providers = config.get("model_providers", {})
+    provider_config = providers.get(provider, {}) if isinstance(providers, dict) else {}
+    provider_config = provider_config if isinstance(provider_config, dict) else {}
+    aws = provider_config.get("aws", {})
+    aws = aws if isinstance(aws, dict) else {}
+    region = (
+        region_override
+        or aws.get("region")
+        or environ.get("AWS_REGION")
+        or environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
+    configured_url = provider_config.get("base_url")
+    upstream = (
+        configured_url.strip()
+        if isinstance(configured_url, str) and configured_url.strip()
+        else template.format(region=region)
+    )
+    profile = aws.get("profile")
+    return upstream.rstrip("/"), profile.strip() if isinstance(
+        profile, str
+    ) and profile.strip() else None
 
 
 def _codex_dotted_key(*parts: str) -> str:
@@ -2309,7 +2351,11 @@ def _codex_dotted_key(*parts: str) -> str:
 
 
 def _codex_session_launch_settings(
-    *, port: int, codex_args: tuple[str, ...], environ: dict[str, str]
+    *,
+    port: int,
+    codex_args: tuple[str, ...],
+    environ: dict[str, str],
+    region: str | None = None,
 ) -> tuple[tuple[str, ...], dict[str, str], list[str]]:
     """Build process-local routing while preserving the selected provider id."""
     config_file, _ = _codex_config_paths()
@@ -2329,6 +2375,17 @@ def _codex_session_launch_settings(
         else config.get("model_provider", "openai")
     )
     provider = str(provider)
+    providers = config.get("model_providers", {})
+    provider_config = providers.get(provider) if isinstance(providers, dict) else None
+    provider_url = provider_config.get("base_url") if isinstance(provider_config, dict) else None
+    legacy_headroom_provider = (
+        provider == "headroom"
+        and isinstance(provider_url, str)
+        and urllib.parse.urlsplit(provider_url).hostname in {"127.0.0.1", "localhost", "::1"}
+    )
+    if legacy_headroom_provider:
+        provider = "openai"
+    bedrock_settings = _codex_bedrock_provider_settings(config, provider, environ, region)
 
     project = _project_name_from_cwd()
     proxy_url = _with_project_prefix(f"http://127.0.0.1:{port}/v1", project)
@@ -2338,28 +2395,37 @@ def _codex_session_launch_settings(
     env["OPENAI_BASE_URL"] = proxy_url
 
     if provider == "openai":
+        if legacy_headroom_provider:
+            overrides.append('model_provider="openai"')
         overrides.append(f"openai_base_url={_codex_toml_value(proxy_url)}")
     else:
-        providers = config.get("model_providers", {})
         provider_config = providers.get(provider) if isinstance(providers, dict) else None
-        if not isinstance(provider_config, dict):
+        if bedrock_settings is not None:
+            upstream, _ = bedrock_settings
+        elif not isinstance(provider_config, dict):
             raise click.ClickException(
                 f"Codex provider {provider!r} cannot be redirected without changing its identity"
             )
-        upstream = provider_config.get("base_url")
-        if not isinstance(upstream, str) or not upstream.strip():
-            raise click.ClickException(
-                f"Codex custom provider {provider!r} has no upstream base_url"
-            )
+        else:
+            upstream = provider_config.get("base_url")
+            if not isinstance(upstream, str) or not upstream.strip():
+                raise click.ClickException(
+                    f"Codex custom provider {provider!r} has no upstream base_url"
+                )
+            upstream = upstream.strip()
         prefix = ("model_providers", provider)
         overrides.extend(
             (
                 f"{_codex_dotted_key(*prefix, 'base_url')}={_codex_toml_value(proxy_url)}",
-                f"{_codex_dotted_key(*prefix, 'supports_websockets')}=true",
+                f"{_codex_dotted_key(*prefix, 'supports_websockets')}="
+                f"{'false' if bedrock_settings is not None else 'true'}",
             )
         )
         env[_UPSTREAM_BASE_URL_ENV_VAR] = upstream.rstrip("/")
         display.append(f"{_UPSTREAM_BASE_URL_ENV_VAR}={upstream.rstrip('/')}")
+        if bedrock_settings is not None and bedrock_settings[1] is not None:
+            env["AWS_PROFILE"] = bedrock_settings[1]
+            display.append(f"AWS_PROFILE={bedrock_settings[1]}")
         overrides.append(
             f"{_codex_dotted_key(*prefix, 'env_http_headers', _UPSTREAM_BASE_URL_HEADER_NAME)}="
             f"{_codex_toml_value(_UPSTREAM_BASE_URL_ENV_VAR)}"
@@ -3716,6 +3782,7 @@ def _ensure_proxy_unlocked(
     vertex_api_url: str | None = None,
     clear_vertex_api_url: bool = False,
     bedrock_api_url: str | None = None,
+    bedrock_profile: str | None = None,
     copilot_api_token: str | None = None,
     copilot_refresh_oauth_token: str | None = None,
     copilot_api_token_expires_at: float | None = None,
@@ -3977,6 +4044,8 @@ def _ensure_proxy_unlocked(
                     requested_bedrock_url = _normalize_proxy_api_url(bedrock_api_url)
                     if running_bedrock_url != requested_bedrock_url:
                         missing.append("bedrock-api-url")
+                if bedrock_profile and running_config.get("bedrock_profile") != bedrock_profile:
+                    missing.append("bedrock-profile")
 
                 if missing:
                     flags_str = ", ".join(
@@ -4067,6 +4136,7 @@ def _ensure_proxy_unlocked(
                     vertex_api_url=vertex_api_url,
                     clear_vertex_api_url=clear_vertex_api_url,
                     bedrock_api_url=bedrock_api_url,
+                    bedrock_profile=bedrock_profile,
                     copilot_api_token=copilot_api_token,
                     copilot_refresh_oauth_token=copilot_refresh_oauth_token,
                     copilot_api_token_expires_at=copilot_api_token_expires_at,
@@ -4369,6 +4439,7 @@ def _launch_tool(
     anyllm_provider: str | None = None,
     region: str | None = None,
     openai_api_url: str | None = None,
+    bedrock_profile: str | None = None,
     copilot_api_token: str | None = None,
     copilot_refresh_oauth_token: str | None = None,
     copilot_api_token_expires_at: float | None = None,
@@ -4405,6 +4476,7 @@ def _launch_tool(
             anyllm_provider=anyllm_provider,
             region=region,
             openai_api_url=openai_api_url,
+            bedrock_profile=bedrock_profile,
             copilot_api_token=copilot_api_token,
             copilot_refresh_oauth_token=copilot_refresh_oauth_token,
             copilot_api_token_expires_at=copilot_api_token_expires_at,
@@ -5956,6 +6028,17 @@ def _run_codex_wrap(
 
     env, env_vars_display = _build_codex_launch_env(port, os.environ)
     env["CODEX_HOME"] = str(active_codex_home)
+    _, preflight_env, _ = _codex_session_launch_settings(
+        port=port,
+        codex_args=codex_args,
+        environ=env,
+        region=region,
+    )
+    bedrock_profile = (
+        preflight_env.get("AWS_PROFILE")
+        if preflight_env.get("AWS_PROFILE") != env.get("AWS_PROFILE")
+        else None
+    )
 
     def configure_codex_launch(
         actual_port: int,
@@ -5968,6 +6051,7 @@ def _run_codex_wrap(
             port=actual_port,
             codex_args=current_args,
             environ=current_env,
+            region=region,
         )
 
     _launch_tool(
@@ -5985,6 +6069,7 @@ def _run_codex_wrap(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
+        bedrock_profile=bedrock_profile,
         configure_launch=configure_codex_launch,
     )
 

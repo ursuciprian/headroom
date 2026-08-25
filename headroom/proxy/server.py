@@ -2175,6 +2175,13 @@ class HeadroomProxy(
         )
         outbound_bytes, source = outbound.content, outbound.source
         outbound_headers = {**headers, "content-type": "application/json"}
+        outbound_headers = self._authorize_bedrock_target_request(
+            method=method,
+            url=url,
+            body=outbound_bytes,
+            headers=outbound_headers,
+            request_id=request_id or "bedrock_responses",
+        )
 
         log_outbound_request(
             forwarder=forwarder_name,
@@ -3106,6 +3113,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 "cloudcode_api_url": config.cloudcode_api_url,
                 "vertex_api_url": config.vertex_api_url,
                 "bedrock_api_url": config.bedrock_api_url,
+                "bedrock_profile": config.bedrock_profile,
                 "savings_profile": config.savings_profile,
                 "target_ratio": effective_target_ratio,
                 "target_savings_percent": (

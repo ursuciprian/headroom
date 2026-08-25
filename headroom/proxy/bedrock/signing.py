@@ -72,7 +72,13 @@ def aws_session(profile: str | None, region: str) -> Any:
 
 
 def sigv4_headers(
-    *, method: str, url: str, body: bytes, region: str, profile: str | None
+    *,
+    method: str,
+    url: str,
+    body: bytes,
+    region: str,
+    profile: str | None,
+    service: str = SIGNING_SERVICE,
 ) -> dict[str, str]:
     """SigV4 headers for a request we are about to send to AWS.
 
@@ -87,5 +93,5 @@ def sigv4_headers(
     if credentials is None:
         raise RuntimeError(f"no AWS credentials for profile={profile or 'default'}")
     signable = AWSRequest(method=method, url=url, data=body)
-    SigV4Auth(credentials.get_frozen_credentials(), SIGNING_SERVICE, region).add_auth(signable)
+    SigV4Auth(credentials.get_frozen_credentials(), service, region).add_auth(signable)
     return dict(signable.headers)

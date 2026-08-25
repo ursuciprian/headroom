@@ -50,7 +50,7 @@ from urllib.parse import quote
 from headroom.proxy.bedrock import (
     BEDROCK_ACTIONS,
     INBOUND_SIGNATURE_HEADERS,
-    aws_bedrock_region,
+    aws_bedrock_signing_target,
     bearer_token,
     control_plane_base,
     has_bearer_auth,
@@ -330,6 +330,7 @@ class BedrockHandlerMixin:
         headers: dict[str, str],
         region: str,
         request_id: str,
+        service: str = "bedrock",
     ) -> dict[str, str]:
         """Give the outbound request a credential AWS will actually accept.
 
@@ -361,7 +362,12 @@ class BedrockHandlerMixin:
         profile = getattr(self.config, "bedrock_profile", None)  # type: ignore[attr-defined]
         try:
             signed = sigv4_headers(
-                method=method, url=url, body=body, region=region, profile=profile
+                method=method,
+                url=url,
+                body=body,
+                region=region,
+                profile=profile,
+                service=service,
             )
         except Exception as err:
             logger.warning(
@@ -372,6 +378,29 @@ class BedrockHandlerMixin:
         # httpx owns framing headers; host is derived from the URL.
         out.update({k: v for k, v in signed.items() if k.lower() not in ("host", "content-length")})
         return out
+
+    def _authorize_bedrock_target_request(
+        self,
+        *,
+        method: str,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+        request_id: str,
+    ) -> dict[str, str]:
+        signing_target = aws_bedrock_signing_target(url)
+        if signing_target is None:
+            return headers
+        region, service = signing_target
+        return self._authorize_bedrock_request(
+            method=method,
+            url=url,
+            body=body,
+            headers=headers,
+            region=region,
+            request_id=request_id,
+            service=service,
+        )
 
     async def _forward_bedrock(
         self,
@@ -398,16 +427,13 @@ class BedrockHandlerMixin:
         from fastapi.responses import JSONResponse, StreamingResponse
         from starlette.background import BackgroundTask
 
-        region = aws_bedrock_region(url)
-        if region is not None:
-            headers = self._authorize_bedrock_request(
-                method=method,
-                url=url,
-                body=content,
-                headers=headers,
-                region=region,
-                request_id=request_id,
-            )
+        headers = self._authorize_bedrock_target_request(
+            method=method,
+            url=url,
+            body=content,
+            headers=headers,
+            request_id=request_id,
+        )
 
         assert self.http_client is not None  # type: ignore[attr-defined]
         upstream_request = self.http_client.build_request(  # type: ignore[attr-defined]

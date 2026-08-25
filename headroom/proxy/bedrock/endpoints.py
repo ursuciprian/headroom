@@ -25,6 +25,21 @@ BEDROCK_ACTIONS: dict[str, tuple[bool, bool]] = {
 AWS_HOST_LABELS = frozenset({"bedrock", "bedrock-fips", "bedrock-runtime", "bedrock-runtime-fips"})
 
 
+def aws_bedrock_signing_target(url: str) -> tuple[str, str] | None:
+    """Return ``(region, service)`` when ``url`` is AWS Bedrock."""
+    region = aws_bedrock_region(url)
+    if region:
+        return region, "bedrock"
+
+    host = (urlsplit(url).hostname or "").lower()
+    suffix = ".api.aws"
+    if host.endswith(suffix):
+        labels = host[: -len(suffix)].split(".")
+        if len(labels) >= 2 and labels[0] == "bedrock-mantle":
+            return labels[1], "bedrock-mantle"
+    return None
+
+
 def aws_bedrock_region(url: str) -> str | None:
     """Region of an AWS-operated Bedrock endpoint, or ``None`` if not one.
 

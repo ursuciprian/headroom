@@ -1224,6 +1224,13 @@ class StreamingMixin:
         )
         outbound_bytes, outbound_source = outbound.content, outbound.source
         outbound_headers = {**headers, "content-type": "application/json"}
+        outbound_headers = self._authorize_bedrock_target_request(
+            method="POST",
+            url=url,
+            body=outbound_bytes,
+            headers=outbound_headers,
+            request_id=request_id,
+        )
         log_outbound_request(
             forwarder="streaming",
             method="POST",

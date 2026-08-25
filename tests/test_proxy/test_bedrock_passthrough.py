@@ -418,6 +418,26 @@ def test_control_plane_base(url, expected):
     assert control_plane_base(url) == expected
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    (
+        (
+            "https://bedrock-mantle.eu-west-1.api.aws/openai/v1/responses",
+            ("eu-west-1", "bedrock-mantle"),
+        ),
+        (
+            "https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/responses",
+            ("eu-west-1", "bedrock"),
+        ),
+        ("https://litellm.internal.example.com/openai/v1/responses", None),
+    ),
+)
+def test_aws_bedrock_signing_target(url, expected):
+    from headroom.proxy.bedrock import aws_bedrock_signing_target
+
+    assert aws_bedrock_signing_target(url) == expected
+
+
 # ── credentials ───────────────────────────────────────────────────────
 
 
@@ -445,6 +465,22 @@ def _fake_credentials(monkeypatch):
     monkeypatch.setattr(
         "headroom.proxy.bedrock.signing.aws_session", MagicMock(return_value=session)
     )
+
+
+def test_sigv4_headers_accepts_mantle_service(monkeypatch):
+    _fake_credentials(monkeypatch)
+    from headroom.proxy.bedrock import sigv4_headers
+
+    headers = sigv4_headers(
+        method="POST",
+        url="https://bedrock-mantle.eu-west-1.api.aws/openai/v1/responses",
+        body=b"{}",
+        region="eu-west-1",
+        profile="corp",
+        service="bedrock-mantle",
+    )
+
+    assert "/bedrock-mantle/aws4_request" in headers["Authorization"]
 
 
 def _sent_headers(client: MagicMock) -> dict[str, str]:
