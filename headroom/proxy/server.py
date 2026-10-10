@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import concurrent.futures
 import contextlib
+import contextvars
 import hmac
 import ipaddress
 import json
@@ -89,9 +90,11 @@ from headroom.observability import (
     LangfuseTracingConfig,
     OTelMetricsConfig,
     configure_langfuse_tracing,
+    configure_mlflow_tracing,
     configure_otel_metrics,
     get_langfuse_tracing_status,
     get_otel_metrics_status,
+    instrument_proxy,
     shutdown_headroom_tracing,
     shutdown_otel_metrics,
 )
@@ -1553,7 +1556,10 @@ class HeadroomProxy(
                 if quarantine_cleared:
                     logger.info("Compression quarantine cleared after all timed-out workers exited")
 
-        future = loop.run_in_executor(self._compression_executor, _wrapped)
+        # Copy contextvars like asyncio.to_thread so trace spans nest per request.
+        future = loop.run_in_executor(
+            self._compression_executor, contextvars.copy_context().run, _wrapped
+        )
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
@@ -2666,6 +2672,8 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         configure_langfuse_tracing(
             LangfuseTracingConfig.from_env(default_service_name="headroom-proxy")
         )
+        if configure_mlflow_tracing():
+            instrument_proxy(proxy)
 
         app.state.started_at = time.time()
         app.state.ready = False

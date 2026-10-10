@@ -13,6 +13,7 @@ from .metrics import (
     shutdown_otel_metrics,
     unregister_otel_metric_attribute_provider,
 )
+from .mlflow_tracing import configure_mlflow_tracing, instrument_proxy
 from .tracing import (
     HeadroomTracer,
     LangfuseTracingConfig,
@@ -35,8 +36,10 @@ __all__ = [
     "HeadroomTracer",
     "LangfuseTracingConfig",
     "configure_langfuse_tracing",
+    "configure_mlflow_tracing",
     "get_headroom_tracer",
     "get_langfuse_tracing_status",
+    "instrument_proxy",
     "reset_otel_metrics",
     "reset_headroom_tracing",
     "set_otel_metrics",

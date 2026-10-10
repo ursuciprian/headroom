@@ -287,6 +287,7 @@ Rewrite the upstream model per request — for example, send small, tool-free ca
 | `HEADROOM_LOG_LEVEL` | `warning` | uvicorn's log level (`critical`, `error`, `warning`, `info`, `debug`, `trace`). Raise to `info` for the per-request access log when diagnosing a deployed proxy. An unrecognized value warns and falls back to `warning`. |
 | `HEADROOM_OTEL_METRICS_ENABLED` | `false` | Export OpenTelemetry metrics (`HEADROOM_OTEL_METRICS_ENDPOINT`, …). See [OTLP export](/docs/metrics#opentelemetry-otlp-export). |
 | `HEADROOM_LANGFUSE_ENABLED` | `false` | Emit Langfuse traces (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`). |
+| `HEADROOM_MLFLOW_ENABLED` | `false` | Emit MLflow traces (needs `headroom-ai[mlflow]`) to `MLFLOW_TRACKING_URI` (default `http://localhost:5050`), experiment `MLFLOW_EXPERIMENT_NAME` (default `my-experiment`). Records full request and response bodies. |
 
 See [Metrics](/docs/metrics) for the Prometheus and Grafana setup.
 

@@ -329,6 +329,9 @@ all = [
 sandbox = [
     "headroom-ai[proxy,code,relevance,reports,otel,html,mcp,spreadsheet]",
 ]
+mlflow = [
+    "mlflow>=3.0",
+]
 
 [project.scripts]
 headroom = "headroom.cli:main"
